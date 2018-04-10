@@ -1,0 +1,6 @@
+config/channel.php
+config/connection.php
+config/log.php
+config/report.php
+vendor/
+.idea/

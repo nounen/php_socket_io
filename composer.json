@@ -1,0 +1,21 @@
+{
+  "name": "aikaola socket",
+  "description": "aikaola socket",
+  "repositories": {
+    "packagist": {
+      "type": "composer",
+      "url": "https://packagist.phpcomposer.com"
+    }
+  },
+  "require": {
+    "workerman/phpsocket.io": "^1.1"
+  },
+  "autoload": {
+    "psr-4": {
+      "Src\\": "src/"
+    },
+    "files": [
+      "src/helpers.php"
+    ]
+  }
+}
