@@ -56,28 +56,27 @@ function getQueryString(query_key, default_value) {
     return default_value;
 }
 
-function getPublishUrl(to, content) {
-    return 'http://' + document.domain + ':9599/?type=publish&to=' + to + '&content=' + content + ' -- TO: ' + to;
+function publishByHttp(to, content) {
+    return 'http://' + document.domain + ':' + http_port + '/?type=publish&to=' + to + '&content=' + content + ' -- TO: ' + to;
 }
 
-$(document).ready(function () {
-    var server_port = 9600;
+var websocket_port = 9600;  // 走 webcoket 端口到 socket_server
+var http_port = 9599;       // 走 http     端口到 socket_server
 
+$(document).ready(function () {
     var room_id = getQueryString('room_id', 'room_1');
     var student_id = getQueryString('student_id', 1);
+    var uid = student_id; // 使用时替换成真实的 uid，这里方便演示使用时间戳
 
-    // 使用时替换成真实的 uid，这里方便演示使用时间戳
-    var uid = student_id;
-
-    $('#send_to_one').attr('href', getPublishUrl(uid, $('#send_to_one').html()));
-    $('#send_to_room').attr('href', getPublishUrl(room_id, $('#send_to_room').html()));
-    $('#send_to_all').attr('href', getPublishUrl('', $('#send_to_all').html()));
+    $('#send_to_one').attr('href', publishByHttp(uid, $('#send_to_one').html()));
+    $('#send_to_room').attr('href', publishByHttp(room_id, $('#send_to_room').html()));
+    $('#send_to_all').attr('href', publishByHttp('', $('#send_to_all').html()));
 
     $('.uid').html(uid);
     $('.domain').html(document.domain);
 
     // 连接服务端
-    var socket = io('http://' + document.domain + ':' + server_port + '?room_id=' + room_id + '&student_id=' + student_id);
+    var socket = io('http://' + document.domain + ':' + websocket_port + '?room_id=' + room_id + '&student_id=' + student_id);
 
     // 客户端连接或重新连成功时被触发
     socket.on('connect', function() {
@@ -104,7 +103,7 @@ $(document).ready(function () {
     // 点击交卷按钮，主动交卷
     $('#submit').click(function() {
         // 向服务端发送 push_answer 事件 -- 发送试卷答案信息
-        // TODO： 由于 socket 不能做数据库操作， 这里应该被替换成 ajax， 走普通接口
+        // TODO： 由于 socket_server 操作数据库比较麻烦， 这里应该被替换成 ajax， 走普通接口
         socket.emit('push_answer', {
             'title': '2017年福建省厦门市理科数学期中考试厦门一中（理科）', 
             'answer': $('#answer').val()

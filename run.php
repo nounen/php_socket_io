@@ -8,6 +8,7 @@
  * php run.php restart 重启
  * php run.php reload 平滑重启
  * php run.php status 查看状态
+ *
  */
 
 require __DIR__ . '/vendor/autoload.php';
@@ -16,25 +17,30 @@ use PHPSocketIO\SocketIO;
 use Workerman\Worker;
 use Workerman\Lib\Timer;
 
+/**
+ * 参考来源: https://github.com/walkor/web-msg-sender/blob/master/start_io.php
+ *
+ * Class Run
+ */
 class Run
 {
     const APP_ENV = 'local'; // local product
 
-    const HTTS_PEM = '/usrdata/cert/caihonggou.com/pem';
+    const HTTS_PEM = '/usrdata/cert/test.com/pem';
 
-    const HTTPS_KEY = '/usrdata/cert/caihonggou.com/key';
+    const HTTPS_KEY = '/usrdata/cert/test.com/key';
 
-    const SOCKET_DOMAIN = 'oa.caihonggou.app';
+    const SOCKET_DOMAIN = 'oa.test.app';
 
     const SOCKET_PORT_SAAS = 9600;
 
-    const SOCKET_WORKER_NUM = 8;
+    const SOCKET_WORKER_NUM = 2;
 
     public $socketIO;
 
-    public $worker;
+    public $httpWorker;
 
-    // 全局数组保存uid在线数据
+    // 全局数组保存 uid 在线数据
     public $uidConnectionMap = array();
 
     // 记录最后一次广播的在线用户数
@@ -92,13 +98,30 @@ class Run
         return $ssl;
     }
 
+    /**
+     * SocketIO 实例
+     *
+     * @return SocketIO
+     */
     protected function getSocketIO()
     {
-        return self::APP_ENV == 'local' ?
-            new SocketIO(self::SOCKET_PORT_SAAS) :
-            new SocketIO(self::SOCKET_PORT_SAAS, $this->getSSL());
+        if (self::APP_ENV == 'local') {
+            $socketIO = new SocketIO(self::SOCKET_PORT_SAAS);
+        } else {
+            $socketIO = new SocketIO(self::SOCKET_PORT_SAAS, $this->getSSL());
+        }
+
+        // TODO: 无效, 如何多进程?
+        $socketIO->count = self::SOCKET_WORKER_NUM;
+
+        return $socketIO;
     }
 
+    /**
+     * Worker 实例
+     *
+     * @return Worker
+     */
     protected function getWorker()
     {
         if (self::APP_ENV == 'local') {
@@ -108,6 +131,9 @@ class Run
             $worker->transport = 'ssl';
         }
 
+        // TODO: 是否生效无从查看
+        $worker->count = self::SOCKET_WORKER_NUM;
+
         return $worker;
     }
 
@@ -115,59 +141,74 @@ class Run
     {
         $this->socketIO = $this->getSocketIO();
 
-        // 客户端发起连接事件时，设置连接socket的各种事件回调
+        // 客户端发起连接事件时，设置连接 socket 的各种事件回调
         $this->socketIO->on('connection', function ($socket) {
-            echo "connection client id -- {$socket->id} \n"; // 客户端唯一标识符
+            printOnLog('connection');
+            printLog("client id -- {$socket->id}"); // 客户端唯一标识符
 
             // 当客户端发来登录事件时触发
             // $loginInfo: 是来自客户端提交的数据
             $socket->on('login', function ($loginInfo) use ($socket) {
-                // 已经登录过了
-                if (isset($socket->uid)) {
+                printOnLog('login');
+
+                if (isset($socket->uid)) { // 是否已经登录过了
                     return;
                 }
 
-                $room_id = (string)$loginInfo['room_id'];
-                $uid     = $student_id = (string)$loginInfo['student_id'];
+                $room_id    = (string)$loginInfo['room_id'];
+                $student_id = (string)$loginInfo['student_id'];
+                $uid        = $student_id; // 用 $student_id 当作 $uid
 
-                // 将这个连接加入到uid分组，方便针对uid推送数据
+                // 将这个连接加入到 $uid 分组，方便针对 $uid 推送数据
                 $socket->join($uid);
                 $socket->join($room_id);
                 $socket->uid = $uid;
 
-                // 更新对应uid的在线数据
-                if (!isset($this->uidConnectionMap[$uid])) {
+                printLog("socket uid -- {$socket->uid}");
+
+                // 更新对应 $uid 的在线数据
+                if (! isset($this->uidConnectionMap[$uid])) {
                     $this->uidConnectionMap[$uid] = 0;
                 }
 
-                // 这个uid有++$this->uidConnectionMap[$uid]个socket连接
+                // 这个 $uid 有 ++$this->uidConnectionMap[$uid] 个 socket 连接
                 ++$this->uidConnectionMap[$uid];
             });
 
             // 当客户端断开连接是触发（一般是关闭网页或者跳转刷新导致）
             $socket->on('disconnect', function () use ($socket) {
-                if (!isset($socket->uid)) {
+                printOnLog('disconnect');
+
+                if (! isset($socket->uid)) {
                     return;
                 }
 
-                // 更新对应uid的在线数据, 将uid的在线socket数减一
+                // 更新对应 $uid 的在线数据, 将 $uid 的在线 socket 数减一
                 if (--$this->uidConnectionMap[$socket->uid] <= 0) {
                     unset($this->uidConnectionMap[$socket->uid]);
                 }
             });
         });
 
-        // 当$this->socketIO启动后监听一个http端口，通过这个端口可以给任意uid或者所有uid推送数据
+        // 当 $this->socketIO 启动后监听一个 http 端口，通过这个端口可以给任意 uid 或者所有 uid 推送数据
         $this->socketIO->on('workerStart', function () {
-            echo "on: workerStart \n";
+            printOnLog('workerStart');
 
-            // 监听一个http端口
-            $inner_http_worker = $this->getWorker();
+            // 监听一个 http 端口
+            $this->httpWorker = $this->getWorker();
 
-            // 当http客户端发来数据时触发
-            $inner_http_worker->onMessage = function ($http_connection, $data) {
+            // 当 http 客户端发来数据时触发
+            $this->httpWorker->onMessage = function ($http_connection, $data) {
                 $_POST = $_POST ? $_POST : $_GET;
                 // 推送数据的url格式 type=publish&to=uid&content=xxxx
+
+                /*
+                // For ab test
+                $_POST['to'] = 1;
+                $_POST['type']  = 'publish';
+                $_POST['content'] = htmlspecialchars('向当前用户发送消息');
+                */
+
                 switch (@$_POST['type']) {
                     case 'publish':
                         echo "publish \n";
@@ -176,14 +217,14 @@ class Run
                         $to               = @$_POST['to'];
                         $_POST['content'] = htmlspecialchars(@$_POST['content']);
 
-                        if ($to) { // 有指定uid则向uid所在socket组发送数据
+                        if ($to) { // 有指定 uid 则向 uid 所在 socket 组发送数据
                             $this->socketIO->to($to)->emit('new_msg', $_POST['content']);
-                        } else { // 否则向所有uid推送数据
+                        } else { // 否则向所有 uid 推送数据
                             $this->socketIO->emit('new_msg', @$_POST['content']);
                         }
 
-                        // http接口返回，如果用户离线socket返回fail
-                        if ($to && !isset($this->uidConnectionMap[$to])) {
+                        // http 接口返回，如果用户离线 socket 返回 fail
+                        if ($to && ! isset($this->uidConnectionMap[$to])) {
                             return $http_connection->send('offline');
                         } else {
                             return $http_connection->send('ok');
@@ -194,9 +235,9 @@ class Run
             };
 
             // 执行监听
-            $inner_http_worker->listen();
+            $this->httpWorker->listen();
 
-            //  一个定时器，定时向所有uid推送当前uid在线数及在线页面数
+            //  一个定时器，定时向所有 uid 推送当前 uid 在线数及在线页面数
             Timer::add(1, function () {
                 $this->online_count_now = count($this->uidConnectionMap);
                 $this->online_page_count_now = array_sum($this->uidConnectionMap);
@@ -213,12 +254,10 @@ class Run
         });
 
         // 运行worker
-        if (! defined('WORKERMAN_START')) {
+        if (!  defined('WORKERMAN_START')) {
             Worker::runAll();
         }
     }
 }
 
 $instance = new Run();
-
-$instance->run();
